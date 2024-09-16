@@ -8,17 +8,6 @@ from core.config import xsschecker
 
 
 def converter(data, url=False):
-    """
-    Converts a string into a dictionary, or a dictionary into a string, depending on input.
-    Can also convert URL paths into a dictionary or vice versa.
-
-    Args:
-        data (str or dict): Input data to be converted.
-        url (bool): If True, data is treated as a URL string.
-
-    Returns:
-        dict or str: Converted data (dict if parsing, str if encoding).
-    """
     try:
         if isinstance(data, str):
             if url:
@@ -42,30 +31,11 @@ def converter(data, url=False):
 
 
 def counter(string):
-    """
-    Counts non-whitespace, non-alphanumeric characters in a string.
-
-    Args:
-        string (str): Input string.
-
-    Returns:
-        int: Number of special characters in the string.
-    """
     string = re.sub(r'\s|\w', '', string)
     return len(string)
 
 
 def closest(number, numbers):
-    """
-    Finds the closest value to the target number in a dictionary of numbers.
-
-    Args:
-        number (int or float): The target number.
-        numbers (dict): A dictionary of numbers to search.
-
-    Returns:
-        dict: A dictionary containing the closest value.
-    """
     difference = [abs(list(numbers.values())[0]), {}]
     for index, i in numbers.items():
         diff = abs(number - i)
@@ -75,16 +45,6 @@ def closest(number, numbers):
 
 
 def fillHoles(original, new):
-    """
-    Fills gaps between two lists by aligning values, filling gaps with zeros.
-
-    Args:
-        original (list): The original list.
-        new (list): The list with holes to be filled.
-
-    Returns:
-        list: The filled list.
-    """
     filler = 0
     filled = []
     for x, y in zip(original, new):
@@ -97,17 +57,6 @@ def fillHoles(original, new):
 
 
 def stripper(string, substring, direction='right'):
-    """
-    Strips a substring from the left or right of a string.
-
-    Args:
-        string (str): Input string.
-        substring (str): Substring to strip.
-        direction (str): Direction to strip ('right' or 'left').
-
-    Returns:
-        str: The stripped string.
-    """
     done = False
     stripped_string = ''
     if direction == 'right':
@@ -123,15 +72,6 @@ def stripper(string, substring, direction='right'):
 
 
 def extractHeaders(headers):
-    """
-    Extracts HTTP headers from a string format and converts them into a dictionary.
-
-    Args:
-        headers (str): String containing HTTP headers.
-
-    Returns:
-        dict: Dictionary containing header key-value pairs.
-    """
     headers = headers.replace('\\n', '\n')
     sorted_headers = {}
     matches = re.findall(r'(.*):\s(.*)', headers)
@@ -143,18 +83,6 @@ def extractHeaders(headers):
 
 
 def replaceValue(mapping, old, new, strategy=None):
-    """
-    Replaces an old value with a new one in a dictionary, with optional copy strategy.
-
-    Args:
-        mapping (dict): The dictionary to modify.
-        old: The value to replace.
-        new: The new value.
-        strategy: Optional copy strategy (e.g., shallow copy, deep copy).
-
-    Returns:
-        dict: Modified dictionary with the value replaced.
-    """
     another_map = strategy(mapping) if strategy else mapping
     if old in another_map.values():
         for k in another_map.keys():
@@ -164,16 +92,6 @@ def replaceValue(mapping, old, new, strategy=None):
 
 
 def getUrl(url, GET):
-    """
-    Extracts the base URL without query parameters for GET requests.
-
-    Args:
-        url (str): The full URL.
-        GET (bool): Whether it's a GET request.
-
-    Returns:
-        str: The base URL without query parameters.
-    """
     if GET:
         return url.split('?')[0]
     else:
@@ -181,18 +99,152 @@ def getUrl(url, GET):
 
 
 def extractScripts(response):
-    """
-    Extracts script contents from a response body for XSS checking.
-
-    Args:
-        response (str): The response content (HTML).
-
-    Returns:
-        list: List of script contents that include XSS payloads.
-    """
     scripts = []
     matches = re.findall(r'(?s)<script.*?>(.*?)</script>', response.lower())
     for match in matches:
         if xsschecker in match:
             scripts.append(match)
     return scripts
+
+
+def randomUpper(string):
+    return ''.join(random.choice((x, y)) for x, y in zip(string.upper(), string.lower()))
+
+
+def flattenParams(currentParam, params, payload):
+    flatted = []
+    for name, value in params.items():
+        if name == currentParam:
+            value = payload
+        flatted.append(name + '=' + value)
+    return '?' + '&'.join(flatted)
+
+
+def getParams(url, data, GET):
+    params = {}
+    if GET and '?' in url:
+        data = url.split('?')[1]
+        if data[:1] == '?':
+            data = data[1:]
+    elif data:
+        if isinstance(data, dict):
+            params = data
+        else:
+            try:
+                params = json.loads(data.replace("'", '"'))
+                return params
+            except json.decoder.JSONDecodeError:
+                pass
+    if not params:
+        parts = data.split('&')
+        for part in parts:
+            each = part.split('=')
+            if len(each) < 2:
+                each.append('')
+            try:
+                params[each[0]] = each[1]
+            except IndexError:
+                params = None
+    return params
+
+
+def writer(obj, path):
+    kind = str(type(obj)).split('\'')[0]
+    if kind == 'list' or kind == 'tuple':
+        obj = '\n'.join(obj)
+    elif kind == 'dict':
+        obj = json.dumps(obj, indent=4)
+    with open(path, 'w+', encoding='utf-8') as savefile:
+        savefile.write(str(obj))
+
+
+def reader(path):
+    with open(path, 'r', encoding='utf-8') as f:
+        result = [line.rstrip('\n') for line in f]
+    return result
+
+
+def js_extractor(response):
+    scripts = []
+    matches = re.findall(r'<(?:script|SCRIPT).*?(?:src|SRC)=([^\s>]+)', response)
+    for match in matches:
+        match = match.replace('\'', '').replace('"', '').replace('`', '')
+        scripts.append(match)
+    return scripts
+
+
+def handle_anchor(parent_url, url):
+    scheme = urlparse(parent_url).scheme
+    if url[:4] == 'http':
+        return url
+    elif url[:2] == '//':
+        return scheme + ':' + url
+    elif url.startswith('/'):
+        host = urlparse(parent_url).netloc
+        return scheme + '://' + host + url
+    elif parent_url.endswith('/'):
+        return parent_url + url
+    else:
+        return parent_url + '/' + url
+
+
+def deJSON(data):
+    return data.replace('\\\\', '\\')
+
+
+def getVar(name):
+    return core.config.globalVariables[name]
+
+
+def updateVar(name, data, mode=None):
+    if mode:
+        if mode == 'append':
+            core.config.globalVariables[name].append(data)
+        elif mode == 'add':
+            core.config.globalVariables[name].add(data)
+    else:
+        core.config.globalVariables[name] = data
+
+
+def isBadContext(position, non_executable_contexts):
+    bad_context = ''
+    for each in non_executable_contexts:
+        if each[0] < position < each[1]:
+            bad_context = each[2]
+            break
+    return bad_context
+
+
+def equalize(array, number):
+    while len(array) < number:
+        array.append('')
+
+
+def escaped(position, string):
+    usable = string[:position][::-1]
+    match = re.search(r'^\\*', usable)
+    if match:
+        match = match.group()
+        return len(match) % 2 != 0
+    return False
+
+
+def genGen(fillings, eFillings, lFillings, eventHandlers, tags, functions, ends, badTag=None):
+    vectors = []
+    r = randomUpper  # randomUpper randomly converts characters to uppercase
+
+    for tag in tags:
+        bait = xsschecker if tag in ['d3v', 'a'] else ''
+        for eventHandler in eventHandlers:
+            if tag in eventHandlers[eventHandler]:
+                for function in functions:
+                    for filling in fillings:
+                        for eFilling in eFillings:
+                            for lFilling in lFillings:
+                                for end in ends:
+                                    if tag in ['d3v', 'a'] and '>' in ends:
+                                        end = '>'
+                                    breaker = f'</{r(badTag)}>' if badTag else ''
+                                    vector = breaker + f'<{r(tag)}{filling}{r(eventHandler)}={eFilling}{function}{lFilling}{end}{bait}'
+                                    vectors.append(vector)
+    return vectors
