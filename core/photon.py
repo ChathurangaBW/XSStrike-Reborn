@@ -48,10 +48,12 @@ def photon(seedUrl, headers, level, threadCount, delay, timeout, skipDOM):
         url = getUrl(target, True)
         params = getParams(target, '', True)
 
+        # Check if the URL contains GET parameters (identified by "=")
         if '=' in target:
             inps = [{'name': name, 'value': value} for name, value in params.items()]
             forms.append({0: {'action': url, 'method': 'get', 'inputs': inps}})
         
+        # Request the URL and extract the response
         response = requester(url, params, headers, True, delay, timeout).text
         
         # Analyze the response for vulnerable JS libraries
@@ -63,17 +65,41 @@ def photon(seedUrl, headers, level, threadCount, delay, timeout, skipDOM):
             clean_highlighted = ''.join([re.sub(r'^\d+\s+', '', line) for line in highlighted])
             if highlighted and clean_highlighted not in checkedDOMs:
                 checkedDOMs.append(clean_highlighted)
-                logger.good('Potential DOM XSS in: %s' % target)
+                logger.good(f'Potential DOM XSS in: {target}')
+        
+        # Parse forms and add to the forms list
+        forms_parsed = zetanize(response)
+        forms.append(forms_parsed)
 
-        # Fix: Call zetanize with only the response
-        new_links = zetanize(response)
-        for link in new_links:
-            if link not in processed and link.startswith(main_url):
-                storage.add(link)
+        # Extract links from the response using anchor tags (<a>)
+        matches = re.findall(r'<a.*?href=["\']{0,1}(.*?)["\']', response)
+        for link in matches:
+            # Ignore file types that we don't need to crawl
+            if link.endswith(('.pdf', '.png', '.jpg', '.jpeg', '.xls', '.xml', '.docx', '.doc')):
+                continue
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=threadCount) as executor:
-        futures = [executor.submit(rec, url) for url in storage]
-        for future in concurrent.futures.as_completed(futures):
-            future.result()
+            # Handle absolute and relative links
+            if link[:4] == 'http':
+                if link.startswith(main_url):
+                    storage.add(link)
+            elif link[:2] == '//':
+                if link.split('/')[2].startswith(host):
+                    storage.add(schema + link)
+            elif link[:1] == '/':
+                storage.add(main_url + link)
+            else:
+                storage.add(main_url + '/' + link)
 
+    # Recursive crawling to specified depth
+    try:
+        for x in range(level):
+            urls = storage - processed  # urls to crawl = all urls - urls that have been crawled
+            threadpool = concurrent.futures.ThreadPoolExecutor(max_workers=threadCount)
+            futures = (threadpool.submit(rec, url) for url in urls)
+            for i in concurrent.futures.as_completed(futures):
+                pass
+    except KeyboardInterrupt:
+        return [forms, processed]
+
+    logger.info(f"Total forms found: {len(forms)}")
     return forms, list(storage)
