@@ -8,31 +8,64 @@ from core.config import xsschecker
 
 
 def converter(data, url=False):
-    if 'str' in str(type(data)):
-        if url:
-            dictized = {}
-            parts = data.split('/')[3:]
-            for part in parts:
-                dictized[part] = part
-            return dictized
+    """
+    Converts a string into a dictionary, or a dictionary into a string, depending on input.
+    Can also convert URL paths into a dictionary or vice versa.
+
+    Args:
+        data (str or dict): Input data to be converted.
+        url (bool): If True, data is treated as a URL string.
+
+    Returns:
+        dict or str: Converted data (dict if parsing, str if encoding).
+    """
+    try:
+        if isinstance(data, str):
+            if url:
+                dictized = {}
+                parts = data.split('/')[3:]
+                for part in parts:
+                    dictized[part] = part
+                return dictized
+            else:
+                return json.loads(data)
         else:
-            return json.loads(data)
-    else:
-        if url:
-            url = urlparse(url).scheme + '://' + urlparse(url).netloc
-            for part in list(data.values()):
-                url += '/' + part
-            return url
-        else:
-            return json.dumps(data)
+            if url:
+                url = urlparse(url).scheme + '://' + urlparse(url).netloc
+                for part in list(data.values()):
+                    url += '/' + part
+                return url
+            else:
+                return json.dumps(data)
+    except (json.JSONDecodeError, ValueError) as e:
+        raise ValueError(f"Error converting data: {e}")
 
 
 def counter(string):
+    """
+    Counts non-whitespace, non-alphanumeric characters in a string.
+
+    Args:
+        string (str): Input string.
+
+    Returns:
+        int: Number of special characters in the string.
+    """
     string = re.sub(r'\s|\w', '', string)
     return len(string)
 
 
 def closest(number, numbers):
+    """
+    Finds the closest value to the target number in a dictionary of numbers.
+
+    Args:
+        number (int or float): The target number.
+        numbers (dict): A dictionary of numbers to search.
+
+    Returns:
+        dict: A dictionary containing the closest value.
+    """
     difference = [abs(list(numbers.values())[0]), {}]
     for index, i in numbers.items():
         diff = abs(number - i)
@@ -42,6 +75,16 @@ def closest(number, numbers):
 
 
 def fillHoles(original, new):
+    """
+    Fills gaps between two lists by aligning values, filling gaps with zeros.
+
+    Args:
+        original (list): The original list.
+        new (list): The list with holes to be filled.
+
+    Returns:
+        list: The filled list.
+    """
     filler = 0
     filled = []
     for x, y in zip(original, new):
@@ -54,55 +97,83 @@ def fillHoles(original, new):
 
 
 def stripper(string, substring, direction='right'):
+    """
+    Strips a substring from the left or right of a string.
+
+    Args:
+        string (str): Input string.
+        substring (str): Substring to strip.
+        direction (str): Direction to strip ('right' or 'left').
+
+    Returns:
+        str: The stripped string.
+    """
     done = False
-    strippedString = ''
+    stripped_string = ''
     if direction == 'right':
         string = string[::-1]
     for char in string:
         if char == substring and not done:
             done = True
         else:
-            strippedString += char
+            stripped_string += char
     if direction == 'right':
-        strippedString = strippedString[::-1]
-    return strippedString
+        stripped_string = stripped_string[::-1]
+    return stripped_string
 
 
 def extractHeaders(headers):
+    """
+    Extracts HTTP headers from a string format and converts them into a dictionary.
+
+    Args:
+        headers (str): String containing HTTP headers.
+
+    Returns:
+        dict: Dictionary containing header key-value pairs.
+    """
     headers = headers.replace('\\n', '\n')
     sorted_headers = {}
     matches = re.findall(r'(.*):\s(.*)', headers)
     for match in matches:
         header = match[0]
-        value = match[1]
-        try:
-            if value[-1] == ',':
-                value = value[:-1]
-            sorted_headers[header] = value
-        except IndexError:
-            pass
+        value = match[1].rstrip(',')
+        sorted_headers[header] = value
     return sorted_headers
 
 
 def replaceValue(mapping, old, new, strategy=None):
     """
-    Replace old values with new ones following dict strategy.
+    Replaces an old value with a new one in a dictionary, with optional copy strategy.
 
-    The parameter strategy is None per default for inplace operation.
-    A copy operation is injected via strateg values like copy.copy
-    or copy.deepcopy
+    Args:
+        mapping (dict): The dictionary to modify.
+        old: The value to replace.
+        new: The new value.
+        strategy: Optional copy strategy (e.g., shallow copy, deep copy).
 
-    Note: A dict is returned regardless of modifications.
+    Returns:
+        dict: Modified dictionary with the value replaced.
     """
-    anotherMap = strategy(mapping) if strategy else mapping
-    if old in anotherMap.values():
-        for k in anotherMap.keys():
-            if anotherMap[k] == old:
-                anotherMap[k] = new
-    return anotherMap
+    another_map = strategy(mapping) if strategy else mapping
+    if old in another_map.values():
+        for k in another_map.keys():
+            if another_map[k] == old:
+                another_map[k] = new
+    return another_map
 
 
 def getUrl(url, GET):
+    """
+    Extracts the base URL without query parameters for GET requests.
+
+    Args:
+        url (str): The full URL.
+        GET (bool): Whether it's a GET request.
+
+    Returns:
+        str: The base URL without query parameters.
+    """
     if GET:
         return url.split('?')[0]
     else:
@@ -110,167 +181,18 @@ def getUrl(url, GET):
 
 
 def extractScripts(response):
+    """
+    Extracts script contents from a response body for XSS checking.
+
+    Args:
+        response (str): The response content (HTML).
+
+    Returns:
+        list: List of script contents that include XSS payloads.
+    """
     scripts = []
     matches = re.findall(r'(?s)<script.*?>(.*?)</script>', response.lower())
     for match in matches:
         if xsschecker in match:
             scripts.append(match)
     return scripts
-
-
-def randomUpper(string):
-    return ''.join(random.choice((x, y)) for x, y in zip(string.upper(), string.lower()))
-
-
-def flattenParams(currentParam, params, payload):
-    flatted = []
-    for name, value in params.items():
-        if name == currentParam:
-            value = payload
-        flatted.append(name + '=' + value)
-    return '?' + '&'.join(flatted)
-
-
-def genGen(fillings, eFillings, lFillings, eventHandlers, tags, functions, ends, badTag=None):
-    vectors = []
-    r = randomUpper  # randomUpper randomly converts chars of a string to uppercase
-    for tag in tags:
-        if tag == 'd3v' or tag == 'a':
-            bait = xsschecker
-        else:
-            bait = ''
-        for eventHandler in eventHandlers:
-            # if the tag is compatible with the event handler
-            if tag in eventHandlers[eventHandler]:
-                for function in functions:
-                    for filling in fillings:
-                        for eFilling in eFillings:
-                            for lFilling in lFillings:
-                                for end in ends:
-                                    if tag == 'd3v' or tag == 'a':
-                                        if '>' in ends:
-                                            end = '>'  # we can't use // as > with "a" or "d3v" tag
-                                    breaker = ''
-                                    if badTag:
-                                        breaker = '</' + r(badTag) + '>'
-                                    vector = breaker + '<' + r(tag) + filling + r(
-                                        eventHandler) + eFilling + '=' + eFilling + function + lFilling + end + bait
-                                    vectors.append(vector)
-    return vectors
-
-
-def getParams(url, data, GET):
-    params = {}
-    if '?' in url and '=' in url:
-        data = url.split('?')[1]
-        if data[:1] == '?':
-            data = data[1:]
-    elif data:
-        if getVar('jsonData') or getVar('path'):
-            params = data
-        else:
-            try:
-                params = json.loads(data.replace('\'', '"'))
-                return params
-            except json.decoder.JSONDecodeError:
-                pass
-    else:
-        return None
-    if not params:
-        parts = data.split('&')
-        for part in parts:
-            each = part.split('=')
-            if len(each) < 2:
-                each.append('')
-            try:
-                params[each[0]] = each[1]
-            except IndexError:
-                params = None
-    return params
-
-
-def writer(obj, path):
-    kind = str(type(obj)).split('\'')[0]
-    if kind == 'list' or kind == 'tuple':
-        obj = '\n'.join(obj)
-    elif kind == 'dict':
-        obj = json.dumps(obj, indent=4)
-    savefile = open(path, 'w+')
-    savefile.write(str(obj.encode('utf-8')))
-    savefile.close()
-
-
-def reader(path):
-    with open(path, 'r') as f:
-        result = [line.rstrip(
-                    '\n').encode('utf-8').decode('utf-8') for line in f]
-    return result
-
-def js_extractor(response):
-    """Extract js files from the response body"""
-    scripts = []
-    matches = re.findall(r'<(?:script|SCRIPT).*?(?:src|SRC)=([^\s>]+)', response)
-    for match in matches:
-        match = match.replace('\'', '').replace('"', '').replace('`', '')
-        scripts.append(match)
-    return scripts
-
-
-def handle_anchor(parent_url, url):
-    scheme = urlparse(parent_url).scheme
-    if url[:4] == 'http':
-        return url
-    elif url[:2] == '//':
-        return scheme + ':' + url
-    elif url.startswith('/'):
-        host = urlparse(parent_url).netloc
-        scheme = urlparse(parent_url).scheme
-        parent_url = scheme + '://' + host
-        return parent_url + url
-    elif parent_url.endswith('/'):
-        return parent_url + url
-    else:
-        return parent_url + '/' + url
-
-
-def deJSON(data):
-    return data.replace('\\\\', '\\')
-
-
-def getVar(name):
-    return core.config.globalVariables[name]
-
-def updateVar(name, data, mode=None):
-    if mode:
-        if mode == 'append':
-            core.config.globalVariables[name].append(data)
-        elif mode == 'add':
-            core.config.globalVariables[name].add(data)
-    else:
-        core.config.globalVariables[name] = data
-
-def isBadContext(position, non_executable_contexts):
-    badContext = ''
-    for each in non_executable_contexts:
-        if each[0] < position < each[1]:
-            badContext = each[2]
-            break
-    return badContext
-
-def equalize(array, number):
-    if len(array) < number:
-        array.append('')
-
-def escaped(position, string):
-    usable = string[:position][::-1]
-    match = re.search(r'^\\*', usable)
-    if match:
-        match = match.group()
-        if len(match) == 1:
-            return True
-        elif len(match) % 2 == 0:
-            return False
-        else:
-            return True
-    else:
-        return False
