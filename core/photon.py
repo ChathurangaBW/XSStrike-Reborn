@@ -48,12 +48,10 @@ def photon(seedUrl, headers, level, threadCount, delay, timeout, skipDOM):
         url = getUrl(target, True)
         params = getParams(target, '', True)
 
-        # Check if the URL contains GET parameters (identified by "=")
         if '=' in target:
             inps = [{'name': name, 'value': value} for name, value in params.items()]
             forms.append({0: {'action': url, 'method': 'get', 'inputs': inps}})
         
-        # Request the URL and extract the response
         response = requester(url, params, headers, True, delay, timeout).text
         
         # Analyze the response for vulnerable JS libraries
@@ -67,13 +65,12 @@ def photon(seedUrl, headers, level, threadCount, delay, timeout, skipDOM):
                 checkedDOMs.append(clean_highlighted)
                 logger.good('Potential DOM XSS in: %s' % target)
 
-        # Zetanize handles further link extraction and analysis
-        new_links = zetanize(response, main_url)
+        # Fix: Call zetanize with only the response
+        new_links = zetanize(response)
         for link in new_links:
             if link not in processed and link.startswith(main_url):
                 storage.add(link)
 
-    # Multithreading to crawl URLs concurrently
     with concurrent.futures.ThreadPoolExecutor(max_workers=threadCount) as executor:
         futures = [executor.submit(rec, url) for url in storage]
         for future in concurrent.futures.as_completed(futures):
