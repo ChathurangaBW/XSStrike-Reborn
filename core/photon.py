@@ -1,20 +1,25 @@
-from urllib.parse import urljoin, urlparse
+import re
 import concurrent.futures
-from core.utils import getParams, randomUpper, handle_anchor
-from core.requester import requester
+from urllib.parse import urlparse
+
+from core.dom import dom
 from core.log import setup_logger
+from core.utils import getUrl, getParams
+from core.requester import requester
+from core.zetanize import zetanize
+from plugins.retireJs import retireJs
 
 logger = setup_logger(__name__)
 
-def photon(url, headers, level, threads, delay, timeout, skipDOM):
+def photon(seedUrl, headers, level, threadCount, delay, timeout, skipDOM):
     """
     Crawls the target URL and recursively extracts links, forms, and potential XSS vectors.
-
+    
     Args:
-        url (str): The target URL.
+        seedUrl (str): The target URL.
         headers (dict): Headers for the request.
         level (int): Crawling depth level.
-        threads (int): Number of threads for concurrent execution.
+        threadCount (int): Number of threads for concurrent execution.
         delay (int): Delay between requests.
         timeout (int): Timeout for requests.
         skipDOM (bool): Whether to skip DOM analysis.
@@ -22,31 +27,56 @@ def photon(url, headers, level, threads, delay, timeout, skipDOM):
     Returns:
         list: List of forms and DOM URLs.
     """
-    scheme = urlparse(url).scheme
-    host = urlparse(url).netloc
-    main_url = scheme + '://' + host
-    forms = []
-    dom_urls = set()
+    forms = []  # web forms
+    processed = set()  # URLs that have been crawled
+    storage = set()  # URLs that belong to the target (in-scope)
+    schema = urlparse(seedUrl).scheme  # extract the scheme (http or https)
+    host = urlparse(seedUrl).netloc  # extract the host (example.com)
+    main_url = schema + '://' + host  # root URL
+    storage.add(seedUrl)  # Add initial URL to storage
+    checkedDOMs = []  # Track processed DOMs
 
-    # Crawl the initial target page
-    crawlingResult = requester(url, {}, headers, True, delay, timeout)
-    if not crawlingResult:
-        return forms, dom_urls
+    def rec(target):
+        processed.add(target)
+        printableTarget = '/'.join(target.split('/')[3:])
+        if len(printableTarget) > 40:
+            printableTarget = printableTarget[-40:]
+        else:
+            printableTarget = (printableTarget + (' ' * (40 - len(printableTarget))))
+        logger.run('Parsing %s\r' % printableTarget)
+        
+        url = getUrl(target, True)
+        params = getParams(target, '', True)
 
-    forms += getParams(url, crawlingResult.text, True)
-    anchors = set(re.findall(r'<a.*?href=[\'"](.*?)[\'"]', crawlingResult.text, re.I))
+        # Check if the URL contains GET parameters (identified by "=")
+        if '=' in target:
+            inps = [{'name': name, 'value': value} for name, value in params.items()]
+            forms.append({0: {'action': url, 'method': 'get', 'inputs': inps}})
+        
+        # Request the URL and extract the response
+        response = requester(url, params, headers, True, delay, timeout).text
+        
+        # Analyze the response for vulnerable JS libraries
+        retireJs(url, response)
 
-    # Handle relative and absolute anchors
-    with concurrent.futures.ThreadPoolExecutor(max_workers=threads) as executor:
-        futures = [
-            executor.submit(requester, handle_anchor(url, anchor), {}, headers, True, delay, timeout)
-            for anchor in anchors
-        ]
+        # DOM Analysis
+        if not skipDOM:
+            highlighted = dom(response)
+            clean_highlighted = ''.join([re.sub(r'^\d+\s+', '', line) for line in highlighted])
+            if highlighted and clean_highlighted not in checkedDOMs:
+                checkedDOMs.append(clean_highlighted)
+                logger.good('Potential DOM XSS in: %s' % target)
 
+        # Zetanize handles further link extraction and analysis
+        new_links = zetanize(response, main_url)
+        for link in new_links:
+            if link not in processed and link.startswith(main_url):
+                storage.add(link)
+
+    # Multithreading to crawl URLs concurrently
+    with concurrent.futures.ThreadPoolExecutor(max_workers=threadCount) as executor:
+        futures = [executor.submit(rec, url) for url in storage]
         for future in concurrent.futures.as_completed(futures):
-            response = future.result()
-            if response and url in response.url:
-                forms += getParams(url, response.text, True)
-                dom_urls.add(response.url)
+            future.result()
 
-    return forms, list(dom_urls)
+    return forms, list(storage)
