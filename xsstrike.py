@@ -16,12 +16,12 @@ try:
         import fuzzywuzzy
     except ImportError:
         import os
-        print ('%s fuzzywuzzy isn\'t installed, installing now.' % info)
+        print('%s fuzzywuzzy isn\'t installed, installing now.' % info)
         ret_code = os.system('pip3 install fuzzywuzzy')
         if(ret_code != 0):
             print('%s fuzzywuzzy installation failed.' % bad)
             quit()
-        print ('%s fuzzywuzzy has been installed, restart XSStrike.' % info)
+        print('%s fuzzywuzzy has been installed, restart XSStrike.' % info)
         quit()
 except ImportError:  # throws error in python2
     print('%s XSStrike isn\'t compatible with python2.\n Use python > 3.4 to run XSStrike.' % bad)
@@ -31,6 +31,26 @@ except ImportError:  # throws error in python2
 import sys
 import json
 import argparse
+import os
+import time
+import asyncio  # Added for async functions
+
+# Import Playwright for Chromium validation
+try:
+    from playwright.async_api import async_playwright
+except ImportError:
+    print('%s Playwright isn\'t installed, installing now.' % info)
+    ret_code = os.system('pip3 install playwright')
+    if ret_code != 0:
+        print('%s Playwright installation failed.' % bad)
+        quit()
+    print('%s Playwright has been installed, installing browsers...' % info)
+    ret_code = os.system('playwright install')
+    if ret_code != 0:
+        print('%s Playwright browsers installation failed.' % bad)
+        quit()
+    print('%s Playwright is ready, restart XSStrike.' % info)
+    quit()
 
 # ... and configurations core lib
 import core.config
@@ -39,6 +59,7 @@ import core.log
 # Processing command line arguments, where dest var names will be mapped to local vars with the same name
 parser = argparse.ArgumentParser()
 parser.add_argument('-u', '--url', help='url', dest='target')
+parser.add_argument('--input-file', help='file containing URLs', dest='input_file')
 parser.add_argument('--data', help='post data', dest='paramData')
 parser.add_argument('-e', '--encode', help='encode payloads', dest='encode')
 parser.add_argument('--fuzzer', help='fuzzer',
@@ -80,11 +101,14 @@ parser.add_argument('--file-log-level', help='File logging level', dest='file_lo
                     choices=core.log.log_config.keys(), default=None)
 parser.add_argument('--log-file', help='Name of the file to log', dest='log_file',
                     default=core.log.log_file)
+parser.add_argument('--output-dir', help='Directory to save output files', dest='output_dir', default='.')
+parser.add_argument('--retries', help='Number of retries on connection failure', dest='retries', type=int, default=3)
+parser.add_argument('--validate', help='Use Chromium to validate vulnerabilities', dest='validate', action='store_true')  # New argument
 args = parser.parse_args()
 
 # Pull all parameter values of dict from argparse namespace into local variables of name == key
-# The following works, but the static checkers are too static ;-) locals().update(vars(args))
 target = args.target
+input_file = args.input_file
 path = args.path
 jsonData = args.jsonData
 paramData = args.paramData
@@ -106,8 +130,13 @@ blindXSS = args.blindXSS
 core.log.console_log_level = args.console_log_level
 core.log.file_log_level = args.file_log_level
 core.log.log_file = args.log_file
+output_dir = args.output_dir
+retries = args.retries
+validate = args.validate  # New variable
 
-logger = core.log.setup_logger()
+# Ensure output directory exists
+if not os.path.exists(output_dir):
+    os.makedirs(output_dir)
 
 core.config.globalVariables = vars(args)
 
@@ -147,6 +176,8 @@ if args_file:
         payloadList = core.config.payloads
     else:
         payloadList = list(filter(None, reader(args_file)))
+else:
+    payloadList = core.config.payloads  # Ensure payloadList is defined
 
 seedList = []
 if args_seeds:
@@ -161,28 +192,165 @@ if update:  # if the user has supplied --update argument
     updater()
     quit()  # quitting because files have been changed
 
-if not target and not args_seeds:  # if the user hasn't supplied a url
-    logger.no_format('\n' + parser.format_help().lower())
+# Build the list of targets from input file or single target
+targets = []
+
+if input_file:
+    with open(input_file) as f:
+        targets.extend([line.strip() for line in f if line.strip()])
+if target:
+    targets.append(target)
+
+if not targets and not args_seeds:  # if the user hasn't supplied a url or input file
+    print('\n' + parser.format_help().lower())
     quit()
 
+# Function to set up logger for each target
+def setup_logger_for_target(domain, log_file, console_log_level, file_log_level):
+    # Configure the logger
+    import logging
+    logger = logging.getLogger(domain)
+    logger.setLevel(logging.DEBUG)
+
+    # Remove existing handlers
+    if logger.hasHandlers():
+        logger.handlers.clear()
+
+    # Create file handler
+    fh = logging.FileHandler(log_file)
+    fh.setLevel(getattr(logging, file_log_level.upper()) if file_log_level else logging.INFO)
+
+    # Create console handler
+    ch = logging.StreamHandler()
+    ch.setLevel(getattr(logging, console_log_level.upper()))
+
+    # Create formatter and add it to handlers
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    fh.setFormatter(formatter)
+    ch.setFormatter(formatter)
+
+    # Add handlers to logger
+    logger.addHandler(fh)
+    logger.addHandler(ch)
+
+    return logger
+
+# Function to retry a function call upon exception
+def retry(func, retries, delay, logger, *args, **kwargs):
+    attempts = 0
+    while attempts <= retries:
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            if attempts < retries:
+                attempts += 1
+                logger.warning('Attempt %d/%d failed with error: %s. Retrying after %d seconds...', attempts, retries, str(e), delay)
+                time.sleep(delay)
+            else:
+                logger.error('Failed after %d attempts. Error: %s', retries, str(e))
+                return None
+
+# Function to validate vulnerability using Playwright
+async def validate_with_chromium(url, payload, logger):
+    logger.info('Validating vulnerability using Chromium for URL: %s', url)
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            context = await browser.new_context()
+            page = await context.new_page()
+            await page.goto(url, timeout=timeout * 1000)
+            # Inject payload if needed
+            if payload:
+                await page.evaluate(f"document.write('{payload}')")
+            # You can add more complex validation logic here
+            content = await page.content()
+            # Simple check to see if payload is reflected
+            if payload in content:
+                logger.info('Vulnerability confirmed for URL: %s', url)
+            else:
+                logger.info('Vulnerability not confirmed for URL: %s', url)
+            await browser.close()
+    except Exception as e:
+        logger.error('Error during Chromium validation for URL %s: %s', url, str(e))
+
 if fuzz:
-    singleFuzz(target, paramData, encoding, headers, delay, timeout)
+    for target in targets:
+        # Extract domain name
+        parsed_url = urlparse(target)
+        domain = parsed_url.netloc
+        if domain.startswith('www.'):
+            domain = domain[4:]
+
+        # Create output file path
+        output_file = os.path.join(output_dir, domain + '.log')
+
+        # Set up logger for this domain
+        logger = setup_logger_for_target(domain, output_file, args.console_log_level, args.file_log_level)
+
+        result = retry(singleFuzz, retries, delay, logger, target, paramData, encoding, headers, delay, timeout)
+
+        # Perform Chromium validation if enabled
+        if validate and result:
+            asyncio.run(validate_with_chromium(target, None, logger))  # Adjust payload as needed
+
 elif not recursive and not args_seeds:
-    if args_file:
-        bruteforcer(target, paramData, payloadList, encoding, headers, delay, timeout)
-    else:
-        scan(target, paramData, encoding, headers, delay, timeout, skipDOM, skip)
+    for target in targets:
+        # Extract domain name
+        parsed_url = urlparse(target)
+        domain = parsed_url.netloc
+        if domain.startswith('www.'):
+            domain = domain[4:]
+
+        # Create output file path
+        output_file = os.path.join(output_dir, domain + '.log')
+
+        # Set up logger for this domain
+        logger = setup_logger_for_target(domain, output_file, args.console_log_level, args.file_log_level)
+
+        if args_file:
+            result = retry(bruteforcer, retries, delay, logger, target, paramData, payloadList, encoding, headers, delay, timeout)
+        else:
+            result = retry(scan, retries, delay, logger, target, paramData, encoding, headers, delay, timeout, skipDOM, skip)
+
+        # Perform Chromium validation if enabled
+        if validate and result:
+            # Assuming 'result' contains the vulnerable URL and payload
+            vulnerable_url = result.get('url')  # Adjust based on actual return value
+            payload = result.get('payload')
+            if vulnerable_url and payload:
+                asyncio.run(validate_with_chromium(vulnerable_url, payload, logger))
+
 else:
-    if target:
-        seedList.append(target)
+    # In recursive mode
+    if args_seeds:
+        seedList.extend(list(filter(None, reader(args_seeds))))
+    seedList.extend(targets)
     for target in seedList:
-        logger.run('Crawling the target')
-        scheme = urlparse(target).scheme
+        # Extract domain name
+        parsed_url = urlparse(target)
+        domain = parsed_url.netloc
+        if domain.startswith('www.'):
+            domain = domain[4:]
+
+        # Create output file path
+        output_file = os.path.join(output_dir, domain + '.log')
+
+        # Set up logger for this domain
+        logger = setup_logger_for_target(domain, output_file, args.console_log_level, args.file_log_level)
+
+        logger.info('Crawling the target: {}'.format(target))
+        scheme = parsed_url.scheme
         logger.debug('Target scheme: {}'.format(scheme))
-        host = urlparse(target).netloc
+        host = parsed_url.netloc
         main_url = scheme + '://' + host
-        crawlingResult = photon(target, headers, level,
-                                threadCount, delay, timeout, skipDOM)
+
+        # Retry the crawling process
+        crawlingResult = retry(photon, retries, delay, logger, target, headers, level,
+                               threadCount, delay, timeout, skipDOM)
+        if crawlingResult is None:
+            logger.error('Crawling failed for target: %s', target)
+            continue  # Skip to the next target
+
         forms = crawlingResult[0]
         domURLs = list(crawlingResult[1])
         difference = abs(len(domURLs) - len(forms))
@@ -198,4 +366,13 @@ else:
         for i, _ in enumerate(concurrent.futures.as_completed(futures)):
             if i + 1 == len(forms) or (i + 1) % threadCount == 0:
                 logger.info('Progress: %i/%i\r' % (i + 1, len(forms)))
-        logger.no_format('')
+        logger.info('')
+
+        # Perform Chromium validation if enabled
+        if validate:
+            # Collect all URLs and payloads that need validation
+            vulnerabilities = []  # This should be populated with found vulnerabilities
+            # For example, vulnerabilities.append({'url': vuln_url, 'payload': vuln_payload})
+
+            for vuln in vulnerabilities:
+                asyncio.run(validate_with_chromium(vuln['url'], vuln['payload'], logger))
